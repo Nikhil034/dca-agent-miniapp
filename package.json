@@ -5,9 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "build": "echo 'No build step required'",
-    "vercel-build": "echo 'Ready for deployment'"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "@farcaster/miniapp-wagmi-connector": "^1.0.0",
