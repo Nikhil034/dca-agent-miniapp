@@ -761,10 +761,10 @@ app.get('/app', (req, res) => {
     <!-- Input Area -->
     <div class="input-area">
       <div class="quick-actions">
-        <div class="quick-action" onclick="sendQuickMessage('Show my strategies')">📊 My Strategies</div>
-        <div class="quick-action" onclick="sendQuickMessage('Transaction history')">📋 History</div>
-        <div class="quick-action" onclick="sendQuickMessage('Buy ETH every 5 minutes')">⚡ Quick DCA</div>
-        <div class="quick-action" onclick="sendQuickMessage('Help me')">❓ Help</div>
+        <div class="quick-action" data-message="Show my strategies">📊 My Strategies</div>
+        <div class="quick-action" data-message="Transaction history">📋 History</div>
+        <div class="quick-action" data-message="Buy ETH every 5 minutes">⚡ Quick DCA</div>
+        <div class="quick-action" data-message="Help me">❓ Help</div>
       </div>
       
       <div class="input-container">
@@ -774,7 +774,7 @@ app.get('/app', (req, res) => {
           placeholder="Ask me to set up a DCA strategy... (e.g. 'Buy $20 of ETH every 5 minutes')"
           rows="1"
         ></textarea>
-        <button id="sendButton" class="send-button" onclick="sendMessage()">
+        <button id="sendButton" class="send-button">
           <span style="font-size: 18px;">➤</span>
         </button>
       </div>
@@ -1106,9 +1106,10 @@ app.get('/app', (req, res) => {
       }
     }
     
-    // Add event listeners for wallet buttons
+    // Add event listeners for all buttons
     const connectWalletBtn = document.getElementById('connectWalletBtn');
     const disconnectWalletBtn = document.getElementById('disconnectWalletBtn');
+    const sendButton = document.getElementById('sendButton');
     
     if (connectWalletBtn) {
       connectWalletBtn.addEventListener('click', connectWallet);
@@ -1117,6 +1118,21 @@ app.get('/app', (req, res) => {
     if (disconnectWalletBtn) {
       disconnectWalletBtn.addEventListener('click', disconnectWallet);
     }
+    
+    if (sendButton) {
+      sendButton.addEventListener('click', sendMessage);
+    }
+    
+    // Add event listeners for quick action buttons
+    const quickActions = document.querySelectorAll('.quick-action');
+    quickActions.forEach(button => {
+      button.addEventListener('click', function() {
+        const message = this.getAttribute('data-message');
+        if (message) {
+          sendQuickMessage(message);
+        }
+      });
+    });
     
     // Setup wagmi functionality
     async function setupWagmi() {
@@ -1236,28 +1252,65 @@ app.get('/app', (req, res) => {
     async function initializeMiniApp() {
       try {
         console.log('Loading Farcaster miniapp SDK...');
-        const { sdk } = await import('https://unpkg.com/@farcaster/miniapp-sdk@0.1.6/dist/index.js');
-        console.log('Mini App SDK loaded successfully', sdk);
         
-        // Call ready to signal the app is loaded
-        if (sdk && sdk.actions && sdk.actions.ready) {
-          await sdk.actions.ready();
-          console.log('Mini App ready() called successfully');
+        // Try multiple SDK import methods
+        let sdk;
+        try {
+          const module = await import('https://esm.sh/@farcaster/miniapp-sdk@0.1.6');
+          sdk = module.sdk || module.default?.sdk || module.default;
+        } catch (e) {
+          console.log('First SDK import failed, trying alternative...');
+          const module = await import('https://unpkg.com/@farcaster/miniapp-sdk@0.1.6/dist/index.js');
+          sdk = module.sdk || module.default?.sdk || module.default;
         }
         
-        window.farcasterSdk = sdk;
+        console.log('Mini App SDK loaded:', sdk);
         
-        // Check if running in Farcaster context
-        console.log('User agent:', navigator.userAgent);
-        console.log('Window context:', {
-          isFarcaster: window.parent !== window,
-          hasPostMessage: !!window.parent.postMessage
-        });
-        
-        return sdk;
+        if (sdk && typeof sdk === 'object') {
+          window.farcasterSdk = sdk;
+          
+          // Call ready to signal the app is loaded - try multiple ways
+          try {
+            if (sdk.actions && sdk.actions.ready) {
+              await sdk.actions.ready();
+              console.log('✅ Mini App ready() called via sdk.actions.ready()');
+            } else if (sdk.ready) {
+              await sdk.ready();
+              console.log('✅ Mini App ready() called via sdk.ready()');
+            } else {
+              console.log('⚠️ No ready() method found in SDK');
+            }
+          } catch (readyError) {
+            console.warn('Error calling ready():', readyError);
+          }
+          
+          // Check if running in Farcaster context
+          console.log('User agent:', navigator.userAgent);
+          console.log('Window context:', {
+            isFarcaster: window.parent !== window,
+            hasPostMessage: !!window.parent.postMessage,
+            sdkMethods: Object.keys(sdk)
+          });
+          
+          return sdk;
+        } else {
+          console.warn('SDK loaded but not in expected format:', typeof sdk);
+          return null;
+        }
       } catch (error) {
         console.warn('Mini App SDK not available:', error);
         console.log('This might be expected if not running in Farcaster context');
+        
+        // Try to call ready anyway in case we're in Farcaster
+        try {
+          if (window.parent && window.parent.postMessage) {
+            window.parent.postMessage({ type: 'miniapp-ready' }, '*');
+            console.log('Sent fallback ready message');
+          }
+        } catch (e) {
+          console.log('Fallback ready message failed');
+        }
+        
         return null;
       }
     }
