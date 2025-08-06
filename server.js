@@ -783,22 +783,24 @@ app.get('/app', (req, res) => {
 
   <!-- Mini App SDK -->
   <script type="module">
-    // Import wagmi and configuration
-    import { WagmiProvider, createConfig, http } from 'https://esm.sh/wagmi@2.16.1'
-    import { base } from 'https://esm.sh/wagmi@2.16.1/chains'
-    import { farcasterMiniApp as miniAppConnector } from 'https://esm.sh/@farcaster/miniapp-wagmi-connector@1.0.0'
-    import { useAccount, useConnect, useDisconnect } from 'https://esm.sh/wagmi@2.16.1'
+    // Import wagmi and configuration - using unpkg for better reliability
+    let wagmi, chains, miniAppConnector;
     
-    // Wagmi configuration
-    const wagmiConfig = createConfig({
-      chains: [base],
-      transports: {
-        [base.id]: http(),
-      },
-      connectors: [
-        miniAppConnector()
-      ]
-    })
+    async function loadWagmiLibraries() {
+      try {
+        wagmi = await import('https://unpkg.com/wagmi@2.16.1/dist/esm/index.js');
+        chains = await import('https://unpkg.com/wagmi@2.16.1/dist/esm/chains.js');
+        miniAppConnector = await import('https://unpkg.com/@farcaster/miniapp-wagmi-connector@1.0.0/dist/index.js');
+        console.log('Wagmi libraries loaded successfully');
+        return true;
+      } catch (error) {
+        console.warn('Failed to load wagmi libraries:', error);
+        return false;
+      }
+    }
+    
+    // Wagmi configuration - will be set up after libraries load
+    let wagmiConfig = null;
     
     let ws = null;
     let isConnected = false;
@@ -871,13 +873,28 @@ app.get('/app', (req, res) => {
       // Show typing indicator
       showTyping();
       
-      // Send via WebSocket or fallback to HTTP
-      if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          message: message,
-          type: 'user_message'
-        }));
-      } else {
+      // Use HTTP API instead of WebSocket (Vercel doesn't support WebSocket)
+      try {
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ message: message })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          hideTyping();
+          // Add only the agent response (user message already added)
+          if (data.messages && data.messages[1]) {
+            addMessageToChat(data.messages[1]);
+          }
+        } else {
+          throw new Error('API request failed');
+        }
+      } catch (error) {
+        console.error('Chat API failed, using fallback:', error);
         // Fallback: simulate response
         setTimeout(() => {
           hideTyping();
@@ -1104,28 +1121,50 @@ app.get('/app', (req, res) => {
     // Setup wagmi functionality
     async function setupWagmi() {
       try {
-        const { getAccount, connect, disconnect } = await import('https://esm.sh/wagmi@2.16.1/actions')
+        // Load wagmi libraries first
+        const librariesLoaded = await loadWagmiLibraries();
+        if (!librariesLoaded) {
+          throw new Error('Failed to load wagmi libraries');
+        }
+        
+        // Create wagmi config
+        wagmiConfig = wagmi.createConfig({
+          chains: [chains.base],
+          transports: {
+            [chains.base.id]: wagmi.http(),
+          },
+          connectors: [
+            miniAppConnector.farcasterMiniApp()
+          ]
+        });
+        
+        console.log('Wagmi config created:', wagmiConfig);
         
         // Setup connection handlers
         const connectors = wagmiConfig.connectors;
         
         wagmiClient = {
           connect: async (options) => {
-            const result = await connect(wagmiConfig, options);
-            currentAccount = getAccount(wagmiConfig);
+            const wagmiActions = await import('https://unpkg.com/wagmi@2.16.1/dist/esm/actions.js');
+            const result = await wagmiActions.connect(wagmiConfig, options);
+            currentAccount = wagmiActions.getAccount(wagmiConfig);
             updateWalletDisplay(currentAccount);
             return result;
           },
           disconnect: async () => {
-            await disconnect(wagmiConfig);
+            const wagmiActions = await import('https://unpkg.com/wagmi@2.16.1/dist/esm/actions.js');
+            await wagmiActions.disconnect(wagmiConfig);
             currentAccount = null;
             updateWalletDisplay(null);
           },
-          getAccount: () => getAccount(wagmiConfig)
+          getAccount: async () => {
+            const wagmiActions = await import('https://unpkg.com/wagmi@2.16.1/dist/esm/actions.js');
+            return wagmiActions.getAccount(wagmiConfig);
+          }
         };
         
         // Check if already connected
-        const account = getAccount(wagmiConfig);
+        const account = await wagmiClient.getAccount();
         if (account.isConnected) {
           currentAccount = account;
           updateWalletDisplay(account);
@@ -1134,7 +1173,8 @@ app.get('/app', (req, res) => {
         return { connect: wagmiClient.connect, connectors };
       } catch (error) {
         console.error('Failed to setup wagmi:', error);
-        throw error;
+        // Don't throw error, just continue without wallet functionality
+        return { connect: null, connectors: [] };
       }
     }
     
@@ -1195,27 +1235,54 @@ app.get('/app', (req, res) => {
     // Initialize Mini App SDK
     async function initializeMiniApp() {
       try {
-        const { sdk } = await import('https://esm.sh/@farcaster/miniapp-sdk@0.1.6');
-        console.log('Mini App SDK loaded successfully');
-        await sdk.actions.ready();
-        console.log('Mini App ready() called successfully');
+        console.log('Loading Farcaster miniapp SDK...');
+        const { sdk } = await import('https://unpkg.com/@farcaster/miniapp-sdk@0.1.6/dist/index.js');
+        console.log('Mini App SDK loaded successfully', sdk);
+        
+        // Call ready to signal the app is loaded
+        if (sdk && sdk.actions && sdk.actions.ready) {
+          await sdk.actions.ready();
+          console.log('Mini App ready() called successfully');
+        }
+        
         window.farcasterSdk = sdk;
+        
+        // Check if running in Farcaster context
+        console.log('User agent:', navigator.userAgent);
+        console.log('Window context:', {
+          isFarcaster: window.parent !== window,
+          hasPostMessage: !!window.parent.postMessage
+        });
+        
+        return sdk;
       } catch (error) {
         console.warn('Mini App SDK not available:', error);
+        console.log('This might be expected if not running in Farcaster context');
+        return null;
       }
     }
     
     // Initialize everything
     async function init() {
-      await initializeMiniApp();
-      connectWebSocket();
+      console.log('Initializing DCA Agent...');
       
+      // Initialize Farcaster SDK first
+      const sdk = await initializeMiniApp();
+      
+      // Skip WebSocket on Vercel (doesn't support it)
+      console.log('Skipping WebSocket connection (using HTTP API instead)');
+      
+      // Setup wagmi for wallet functionality
       try {
+        console.log('Setting up wagmi...');
         await setupWagmi();
-        console.log('Wagmi setup completed');
+        console.log('Wagmi setup completed successfully');
       } catch (error) {
         console.warn('Wagmi setup failed:', error);
+        console.log('Continuing without wallet functionality');
       }
+      
+      console.log('DCA Agent initialization complete');
     }
     
     // Start the app
@@ -1373,9 +1440,9 @@ app.get('/.well-known/farcaster.json', (req, res) => {
       description: "AI-powered automated DCA trading on Arbitrum using Camelot DEX. Chat with the agent to set up custom strategies.",
       iconUrl: `${baseUrl}/api/image/splash`,
       homeUrl: baseUrl,
-      imageUrl: `\${baseUrl}/api/image/preview`,
+      imageUrl: `${baseUrl}/api/image/preview`,
       buttonTitle: "💬 Chat with Agent",
-      splashImageUrl: `\${baseUrl}/api/image/splash`,
+      splashImageUrl: `${baseUrl}/api/image/splash`,
       splashBackgroundColor: "#0f0f23",
       tags: ["defi", "trading", "dca", "arbitrum", "camelot", "automation", "ai"],
       primaryCategory: "defi",
